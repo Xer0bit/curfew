@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">Curfew</h1>
-
+<p align="center"><strong>⚠︎ Hello HUMANS, it most powerful wifi Hijacking tool written in RUST follow the setup instructions get full speed of your internet to you ⚠︎</strong></p>
 <p align="center"><strong>Give your household's network a bedtime.</strong></p>
 
 <p align="center">
