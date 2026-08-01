@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <title>Curfew</title>
+  <!-- Wi-Fi signal fading into a crescent moon: the network goes quiet at bedtime. -->
+  <circle cx="100" cy="150" r="10" fill="#2dd4bf"/>
+  <path d="M 72 128 A 40 40 0 0 1 128 128" fill="none" stroke="#2dd4bf" stroke-width="8" stroke-linecap="round"/>
+  <path d="M 50 100 A 72 72 0 0 1 150 100" fill="none" stroke="#64748b" stroke-width="8" stroke-linecap="round" stroke-dasharray="2 14"/>
+  <path d="M 138 60 A 26 26 0 1 0 146 96 A 20 20 0 0 1 138 60 Z" fill="#fbbf24"/>
+</svg>

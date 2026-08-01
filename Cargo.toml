@@ -1,0 +1,15 @@
+[package]
+name = "curfew"
+version = "0.1.0"
+edition = "2021"
+description = "Give your household's network a bedtime — throttle everyone except who you exempt."
+
+[[bin]]
+name = "curfew"
+path = "src/main.rs"
+
+[dependencies]
+ctrlc = "3.4"
+
+[profile.release]
+opt-level = 2
