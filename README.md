@@ -24,32 +24,43 @@
 ```
 $ sudo curfew
 
-Interface : wlx30169d9625b7
-Self IP   : 192.168.1.42  (exempted, full speed)
-Gateway   : 192.168.1.1
-
-Self (192.168.1.42) running at full speed.
-Monitoring 192.168.1.42/24 for devices every 15s.
-
-[s]tatus  [l]ogs  [a]llow full speed  [r]evoke full speed  [q]uit and restore internet
-> s
-
-  192.168.1.42    (you)            full speed
-  192.168.1.27    aa:bb:cc:11:22:33   throttled at 10kbit
-  192.168.1.144   dd:ee:ff:44:55:66   throttled at 10kbit
+Curfew — wlan0 — ● watching (14 checks so far)
+No curfew window set — throttling is always on.
+----------------------------------------------------------------
+192.168.1.42     you                     full speed
+192.168.1.27     Kid's iPad              throttled at 10kbit
+192.168.1.144    aa:bb:cc:dd:ee:ff       throttled at 10kbit
+----------------------------------------------------------------
+1) Give a device full speed
+2) Revoke full speed from a device
+3) Set or change the curfew schedule
+4) Name a device
+5) View activity log
+0) Stop and restore everyone's internet
+----------------------------------------------------------------
+Choose an option:
 ```
 
 ## Install
 
+**Quick install (no repo clone needed)** — downloads a prebuilt binary:
+
 ```
-git clone https://github.com/xer0bit/curfew
+curl -fsSL https://raw.githubusercontent.com/Xer0bit/curfew/master/setup_curfew.sh | bash
+```
+
+Prebuilt binaries currently cover Linux `x86_64` only. For other
+architectures (e.g. Raspberry Pi), build from source:
+
+```
+git clone https://github.com/Xer0bit/curfew
 cd curfew
 cargo build --release
 sudo ./target/release/curfew
 ```
 
-The first `sudo` run installs itself to `/usr/local/bin/curfew` automatically
-— no separate install step. Every run after that, from anywhere, is just:
+Either way, the first `sudo` run installs itself to `/usr/local/bin/curfew`
+automatically. Every run after that, from anywhere, is just:
 
 ```
 sudo curfew
@@ -92,9 +103,10 @@ sudo curfew
 ```
 
 Set a password on first run. Pick your Wi-Fi interface. Everything else on
-the network gets throttled automatically — press `a` to give a device
-(yourself, your partner) permanent full speed, saved across restarts. `q` or
-`Ctrl+C` restores everyone instantly.
+the network gets throttled automatically — pick option `1` to give a device
+(yourself, your partner) permanent full speed, saved across restarts. `0` or
+`Ctrl+C` restores everyone instantly. The dashboard refreshes itself every
+couple of seconds, so it's always showing current state.
 
 ## Why
 
