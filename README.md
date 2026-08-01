@@ -46,7 +46,7 @@ Choose an option:
 **Quick install (no repo clone needed)** — downloads a prebuilt binary:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/Xer0bit/curfew/master/setup_curfew.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Xer0bit/curfew/master/setup.sh | bash
 ```
 
 Prebuilt binaries currently cover Linux `x86_64` only. For other
