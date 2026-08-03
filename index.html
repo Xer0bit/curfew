@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Curfew — give your household's network a bedtime</title>
+<meta name="description" content="Throttle every device on your Wi-Fi to a crawl, and grant full speed only to who you choose. One binary, no app, no router firmware, no cloud account.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Ccircle cx='100' cy='150' r='10' fill='%232dd4bf'/%3E%3Cpath d='M 72 128 A 40 40 0 0 1 128 128' fill='none' stroke='%232dd4bf' stroke-width='8' stroke-linecap='round'/%3E%3Cpath d='M 138 60 A 26 26 0 1 0 146 96 A 20 20 0 0 1 138 60 Z' fill='%23fbbf24'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #10161d;
+    --border: #1f2937;
+    --text: #cbd5e1;
+    --muted: #64748b;
+    --teal: #2dd4bf;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --mono: "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; overflow-x: hidden; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.5;
+  }
+  a { color: var(--teal); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 24px; }
+
+  header.hero { padding: 96px 0 56px; text-align: center; }
+  .logo { width: 72px; height: 72px; }
+  h1 { font-size: 2.6rem; margin: 20px 0 8px; letter-spacing: -0.02em; }
+  .byline { color: var(--muted); font-size: 0.85rem; margin-bottom: 24px; }
+  .tagline { font-size: 1.15rem; color: var(--text); margin: 0 0 6px; }
+  .subtagline { color: var(--muted); font-size: 0.95rem; margin: 0 auto 32px; max-width: 520px; }
+
+  .badges { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 36px; }
+  .badge {
+    font-size: 0.72rem; padding: 4px 10px; border-radius: 100px;
+    border: 1px solid var(--border); color: var(--muted); font-family: var(--mono);
+  }
+
+  /* Install tabs */
+  .install { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; text-align: left; }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); }
+  .tab {
+    flex: 1; padding: 10px 0; text-align: center; font-size: 0.82rem; color: var(--muted);
+    cursor: pointer; background: none; border: none; font-family: var(--sans); border-right: 1px solid var(--border);
+  }
+  .tab:last-child { border-right: none; }
+  .tab.active { color: var(--teal); background: rgba(45, 212, 191, 0.06); }
+  .cmd-row { display: flex; align-items: center; gap: 10px; padding: 16px 18px; }
+  .cmd { flex: 1; font-family: var(--mono); font-size: 0.85rem; color: var(--text); overflow-x: auto; white-space: pre; }
+  .copy-btn {
+    flex-shrink: 0; background: var(--border); color: var(--text); border: none; border-radius: 6px;
+    padding: 6px 12px; font-size: 0.75rem; cursor: pointer; font-family: var(--sans);
+  }
+  .copy-btn:hover { background: #2a3644; }
+  .os-pane { display: none; }
+  .os-pane.active { display: block; }
+  .os-note { padding: 0 18px 16px; font-size: 0.78rem; color: var(--muted); }
+  .os-note a { color: var(--muted); text-decoration: underline; }
+
+  .cta { margin-top: 20px; display: flex; justify-content: center; gap: 16px; font-size: 0.88rem; }
+
+  section { padding: 56px 0; border-top: 1px solid var(--border); }
+  h2 { font-size: 1.4rem; text-align: center; margin: 0 0 32px; }
+
+  /* Terminal demo */
+  .terminal {
+    background: #0d1117; border: 1px solid var(--border); border-radius: 10px;
+    font-family: var(--mono); font-size: 0.78rem; overflow: hidden;
+  }
+  .term-bar { display: flex; gap: 6px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .dot.r { background: #f87171; } .dot.y { background: #fbbf24; } .dot.g { background: #34d399; }
+  .term-body { padding: 16px 18px 20px; white-space: pre; overflow-x: auto; color: #9ca3af; }
+  .term-body .prompt { color: var(--teal); }
+  .term-body .you { color: #34d399; }
+  .term-body .throttled { color: var(--amber); }
+  .term-body .throttled-ip { color: var(--red); }
+  .term-body .dim { color: #475569; }
+  .term-body .menu-n { color: var(--text); }
+
+  /* How it works */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .step { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 22px 18px; }
+  .step .n {
+    display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+    border-radius: 50%; background: rgba(45, 212, 191, 0.12); color: var(--teal); font-size: 0.8rem;
+    font-family: var(--mono); margin-bottom: 12px;
+  }
+  .step h3 { font-size: 0.95rem; margin: 0 0 8px; }
+  .step p { font-size: 0.85rem; color: var(--muted); margin: 0; }
+
+  .mech-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .mech-table th, .mech-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .mech-table th { color: var(--muted); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  .mech-table td { font-family: var(--mono); font-size: 0.78rem; }
+
+  footer { padding: 40px 0 60px; text-align: center; color: var(--muted); font-size: 0.82rem; }
+  footer a { color: var(--muted); text-decoration: underline; }
+
+  @media (max-width: 600px) {
+    h1 { font-size: 2rem; }
+    .steps { grid-template-columns: 1fr; }
+    .tab { font-size: 0.72rem; padding: 10px 4px; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+      <circle cx="100" cy="150" r="10" fill="#2dd4bf"/>
+      <path d="M 72 128 A 40 40 0 0 1 128 128" fill="none" stroke="#2dd4bf" stroke-width="8" stroke-linecap="round"/>
+      <path d="M 50 100 A 72 72 0 0 1 150 100" fill="none" stroke="#64748b" stroke-width="8" stroke-linecap="round" stroke-dasharray="2 14"/>
+      <path d="M 138 60 A 26 26 0 1 0 146 96 A 20 20 0 0 1 138 60 Z" fill="#fbbf24"/>
+    </svg>
+    <h1>Curfew</h1>
+    <div class="byline">by xer0bit</div>
+    <p class="tagline">Give your household's network a bedtime.</p>
+    <p class="subtagline">Throttle every device on your Wi-Fi to a crawl, and grant full speed only to who you choose. One binary. No app, no router firmware, no cloud account.</p>
+
+    <div class="badges">
+      <span class="badge">MIT</span>
+      <span class="badge">Rust</span>
+      <span class="badge">Linux</span>
+      <span class="badge">macOS</span>
+      <span class="badge">Windows</span>
+    </div>
+
+    <div class="install">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-os="linux">Linux</button>
+        <button class="tab" data-os="macos">macOS</button>
+        <button class="tab" data-os="windows">Windows</button>
+      </div>
+
+      <div class="os-pane active" data-os="linux">
+        <div class="cmd-row">
+          <code class="cmd" id="cmd-linux">curl -fsSL https://raw.githubusercontent.com/Xer0bit/curfew/master/setup.sh | bash</code>
+          <button class="copy-btn" data-target="cmd-linux">Copy</button>
+        </div>
+        <div class="os-note">Downloads a prebuilt <code>x86_64</code> binary. Other architectures build from source automatically.</div>
+      </div>
+
+      <div class="os-pane" data-os="macos">
+        <div class="cmd-row">
+          <code class="cmd" id="cmd-macos">curl -fsSL https://raw.githubusercontent.com/Xer0bit/curfew/master/setup.sh | bash</code>
+          <button class="copy-btn" data-target="cmd-macos">Copy</button>
+        </div>
+        <div class="os-note">Builds from source (installs Rust + Homebrew deps for you). Needs <a href="https://brew.sh" target="_blank" rel="noopener">Homebrew</a>.</div>
+      </div>
+
+      <div class="os-pane" data-os="windows">
+        <div class="cmd-row">
+          <code class="cmd" id="cmd-windows">irm https://raw.githubusercontent.com/Xer0bit/curfew/master/setup.ps1 | iex</code>
+          <button class="copy-btn" data-target="cmd-windows">Copy</button>
+        </div>
+        <div class="os-note">Run from an elevated PowerShell. Needs <a href="https://npcap.com" target="_blank" rel="noopener">Npcap</a> and <a href="https://reqrypt.org/windivert.html" target="_blank" rel="noopener">WinDivert</a> installed first — the script checks and tells you what's missing.</div>
+      </div>
+    </div>
+
+    <div class="cta">
+      <a href="https://github.com/Xer0bit/curfew" target="_blank" rel="noopener">GitHub →</a>
+      <a href="https://github.com/Xer0bit/curfew/releases" target="_blank" rel="noopener">Releases →</a>
+      <a href="https://github.com/Xer0bit/curfew#readme" target="_blank" rel="noopener">Full docs →</a>
+    </div>
+  </div>
+</header>
+
+<section id="demo">
+  <div class="wrap">
+    <h2>What it looks like</h2>
+    <div class="terminal">
+      <div class="term-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span></div>
+      <div class="term-body">$ <span class="prompt">sudo curfew</span>
+
+Curfew — wlan0 — ● watching (14 checks so far)
+No curfew window set — throttling is always on.
+----------------------------------------------------------------
+<span class="you">192.168.1.42     you                     full speed</span>
+<span class="throttled-ip">192.168.1.27</span>     Kid's iPad              <span class="throttled">throttled at 10kbit</span>
+<span class="throttled-ip">192.168.1.144</span>    aa:bb:cc:dd:ee:ff       <span class="throttled">throttled at 10kbit</span>
+----------------------------------------------------------------
+<span class="menu-n">1</span>) Give a device full speed
+<span class="menu-n">2</span>) Revoke full speed from a device
+<span class="menu-n">3</span>) Set or change the curfew schedule
+<span class="menu-n">4</span>) Name a device
+<span class="menu-n">5</span>) View activity log
+<span class="menu-n">0</span>) Stop and restore everyone's internet
+----------------------------------------------------------------
+<span class="dim">Choose an option:</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <h3>Finds every device</h3>
+        <p>Scans your Wi-Fi automatically every few seconds — no manual device list to maintain.</p>
+      </div>
+      <div class="step">
+        <div class="n">2</div>
+        <h3>Becomes the middleman</h3>
+        <p>ARP-spoofs each device so its traffic routes through your machine, then rate-limits it in the kernel (or the OS-equivalent).</p>
+      </div>
+      <div class="step">
+        <div class="n">3</div>
+        <h3>You choose who's exempt</h3>
+        <p>Pick yourself, your partner, anyone — by MAC address, saved across restarts. Everyone else stays throttled by default.</p>
+      </div>
+    </div>
+
+    <div style="height: 32px;"></div>
+
+    <table class="mech-table">
+      <thead><tr><th>OS</th><th>ARP spoofing</th><th>Traffic shaping</th></tr></thead>
+      <tbody>
+        <tr><td>Linux</td><td>arpspoof (dsniff)</td><td>tc (HTB)</td></tr>
+        <tr><td>macOS</td><td>arpspoof (dsniff)</td><td>pfctl + dnctl</td></tr>
+        <tr><td>Windows</td><td>pnet + Npcap</td><td>WinDivert</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Only run this on a network you own. MIT licensed.
+    <br>
+    <a href="https://github.com/Xer0bit/curfew" target="_blank" rel="noopener">github.com/Xer0bit/curfew</a>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var tabs = document.querySelectorAll('.tab');
+    var panes = document.querySelectorAll('.os-pane');
+
+    function activate(os) {
+      tabs.forEach(function (t) { t.classList.toggle('active', t.dataset.os === os); });
+      panes.forEach(function (p) { p.classList.toggle('active', p.dataset.os === os); });
+    }
+
+    tabs.forEach(function (t) {
+      t.addEventListener('click', function () { activate(t.dataset.os); });
+    });
+
+    var ua = navigator.userAgent || '';
+    if (ua.indexOf('Mac') !== -1) activate('macos');
+    else if (ua.indexOf('Win') !== -1) activate('windows');
+
+    document.querySelectorAll('.copy-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var text = document.getElementById(btn.dataset.target).textContent;
+        navigator.clipboard.writeText(text).then(function () {
+          var old = btn.textContent;
+          btn.textContent = 'Copied';
+          setTimeout(function () { btn.textContent = old; }, 1500);
+        });
+      });
+    });
+  })();
+</script>
+
+</body>
+</html>
