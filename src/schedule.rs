@@ -3,25 +3,27 @@
 //! cross midnight (e.g. 20:00-07:00) are supported. No schedule means
 //! throttling is always active — the original, simpler behavior.
 
-use crate::system::run;
+use crate::paths::CONFIG_DIR;
 
-const SCHEDULE_FILE: &str = "/etc/curfew/schedule";
+fn schedule_file() -> std::path::PathBuf {
+    std::path::Path::new(CONFIG_DIR).join("schedule")
+}
 
 pub type Window = (String, String);
 
 pub fn load() -> Option<Window> {
-    let content = std::fs::read_to_string(SCHEDULE_FILE).ok()?;
+    let content = std::fs::read_to_string(schedule_file()).ok()?;
     let (start, end) = content.trim().split_once('-')?;
     Some((start.to_string(), end.to_string()))
 }
 
 pub fn save(start: &str, end: &str) {
-    std::fs::create_dir_all("/etc/curfew").unwrap();
-    std::fs::write(SCHEDULE_FILE, format!("{start}-{end}")).unwrap();
+    crate::paths::ensure_dir();
+    std::fs::write(schedule_file(), format!("{start}-{end}")).unwrap();
 }
 
 pub fn clear() {
-    let _ = std::fs::remove_file(SCHEDULE_FILE);
+    let _ = std::fs::remove_file(schedule_file());
 }
 
 /// Accepts 24-hour `HH:MM`.
@@ -37,7 +39,7 @@ pub fn valid(t: &str) -> bool {
 }
 
 fn now_hm() -> String {
-    run("date", &["+%H:%M"])
+    chrono::Local::now().format("%H:%M").to_string()
 }
 
 /// True if there's no schedule (always active) or the current time falls

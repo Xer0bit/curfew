@@ -6,19 +6,24 @@ mod colors;
 mod devices;
 mod install;
 mod network;
+mod paths;
 mod schedule;
+mod sha256;
+mod spoof;
 mod state;
 mod stdin;
 mod system;
 mod tc;
 mod ui;
+#[cfg(target_os = "windows")]
+mod winshape;
 
 use colors::{BOLD, CYAN, DIM, GREEN, RED, RESET};
 use state::State;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use system::{missing_dependencies, prompt, require_root};
+use system::{enable_ip_forward, missing_dependencies, prompt, require_root};
 
 const SCAN_INTERVAL_SECS: u64 = 15;
 
@@ -131,9 +136,12 @@ fn main() {
     let missing = missing_dependencies();
     if !missing.is_empty() {
         eprintln!("{RED}Missing required tools: {}{RESET}", missing.join(", "));
-        eprintln!(
-            "Install them (Debian/Ubuntu): sudo apt install iproute2 nmap dsniff iputils-arping"
-        );
+        #[cfg(target_os = "linux")]
+        eprintln!("Install them (Debian/Ubuntu): sudo apt install iproute2 nmap dsniff iputils-arping");
+        #[cfg(target_os = "macos")]
+        eprintln!("Install them: brew install nmap dsniff");
+        #[cfg(target_os = "windows")]
+        eprintln!("Install nmap from https://nmap.org/download.html and make sure it's on PATH.");
         std::process::exit(1);
     }
 
@@ -187,7 +195,7 @@ fn main() {
         .expect("Error setting Ctrl+C handler");
     }
 
-    let _ = std::fs::write("/proc/sys/net/ipv4/ip_forward", "1");
+    enable_ip_forward();
     tc::rebuild_tc_base(&iface, &rate);
 
     println!("{GREEN}Self ({my_ip}) running at full speed.{RESET}");

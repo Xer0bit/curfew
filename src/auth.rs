@@ -1,33 +1,18 @@
 //! Password gate: only someone who knows a saved password can start or stop
-//! Curfew. Passwords are stored as SHA-256 hashes (via the system
-//! `sha256sum`, no crypto crate needed) in a root-only file, one per
-//! authorized person.
+//! Curfew. Passwords are stored as SHA-256 hashes (computed in-process, see
+//! [`crate::sha256`]) in an owner-only file, one per authorized person.
 
 use crate::colors::{RED, RESET};
+use crate::sha256;
 use crate::system::prompt_hidden;
 use std::io::Write;
-use std::process::{Command, Stdio};
-
-const PASSWD_FILE: &str = "/etc/curfew/passwd";
 
 fn sha256_hex(input: &str) -> String {
-    let mut child = Command::new("sha256sum")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("sha256sum is required (coreutils)");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    let out = child.wait_with_output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
+    sha256::hex(input.as_bytes())
+}
+
+fn passwd_file() -> std::path::PathBuf {
+    std::path::Path::new(crate::paths::CONFIG_DIR).join("passwd")
 }
 
 fn read_new_password(who: &str) -> String {
@@ -46,23 +31,24 @@ fn read_new_password(who: &str) -> String {
 
 fn append_password_hash(hash: &str) {
     use std::fs::OpenOptions;
-    use std::os::unix::fs::PermissionsExt;
 
-    std::fs::create_dir_all("/etc/curfew").unwrap();
+    crate::paths::ensure_dir();
+    let path = passwd_file();
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(PASSWD_FILE)
+        .open(&path)
         .expect("cannot write password file");
     writeln!(file, "{hash}").unwrap();
-    std::fs::set_permissions(PASSWD_FILE, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::paths::restrict(&path.to_string_lossy());
 }
 
 /// Prompts to authenticate against any known password. Returns once a correct
 /// password is entered; on the very first run (no password file yet) it walks
 /// the owner through creating one instead.
 pub fn authenticate() {
-    if !std::path::Path::new(PASSWD_FILE).exists() {
+    let path = passwd_file();
+    if !path.exists() {
         println!("No password set up yet, first-time setup.");
         let pass = read_new_password("yourself");
         append_password_hash(&sha256_hex(&pass));
@@ -71,7 +57,7 @@ pub fn authenticate() {
         return;
     }
 
-    let known = std::fs::read_to_string(PASSWD_FILE).unwrap_or_default();
+    let known = std::fs::read_to_string(&path).unwrap_or_default();
     let known: Vec<&str> = known.lines().filter(|l| !l.is_empty()).collect();
 
     for _ in 0..3 {

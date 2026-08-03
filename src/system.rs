@@ -35,32 +35,57 @@ pub fn try_run(cmd: &str, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("failed to run {cmd}: {e}"))
 }
 
+fn tool_exists(cmd: &str) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {cmd}"))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        Command::new("where")
+            .arg(cmd)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+}
+
 /// Checks that every required external tool is on `PATH`. Returns the names
-/// of any that are missing.
+/// of any that are missing. The required set differs per OS: Linux needs
+/// `iproute2`/`iw`/`tc`/`arpspoof`/`arping`, macOS needs `pfctl`/`dnctl`
+/// (built in) plus Homebrew's `arpspoof`, Windows needs nothing beyond `nmap`
+/// on `PATH` (the WinDivert/Npcap drivers are checked separately since a
+/// missing driver isn't a missing `PATH` entry).
+#[cfg(target_os = "linux")]
+pub fn missing_dependencies() -> Vec<&'static str> {
+    const REQUIRED: &[&str] = &["iw", "ip", "tc", "nmap", "arpspoof", "arping", "pkill"];
+    REQUIRED.iter().filter(|cmd| !tool_exists(cmd)).copied().collect()
+}
+
+#[cfg(target_os = "macos")]
 pub fn missing_dependencies() -> Vec<&'static str> {
     const REQUIRED: &[&str] = &[
-        "iw",
-        "ip",
-        "tc",
         "nmap",
         "arpspoof",
-        "arping",
-        "pkill",
-        "sha256sum",
-        "stty",
+        "pfctl",
+        "dnctl",
+        "route",
+        "ifconfig",
+        "arp",
+        "networksetup",
     ];
-    REQUIRED
-        .iter()
-        .filter(|cmd| {
-            Command::new("sh")
-                .arg("-c")
-                .arg(format!("command -v {cmd}"))
-                .output()
-                .map(|o| !o.status.success())
-                .unwrap_or(true)
-        })
-        .copied()
-        .collect()
+    REQUIRED.iter().filter(|cmd| !tool_exists(cmd)).copied().collect()
+}
+
+#[cfg(target_os = "windows")]
+pub fn missing_dependencies() -> Vec<&'static str> {
+    const REQUIRED: &[&str] = &["nmap", "netsh", "arp"];
+    REQUIRED.iter().filter(|cmd| !tool_exists(cmd)).copied().collect()
 }
 
 /// Like [`run_status`] but swallows stdout/stderr. Used for cleanup/teardown
@@ -114,6 +139,7 @@ pub fn spin_while<T: Send + 'static>(label: &str, work: impl FnOnce() -> T + Sen
     handle.join().unwrap()
 }
 
+#[cfg(unix)]
 pub fn require_root() {
     let uid = run("id", &["-u"]);
     if uid != "0" {
@@ -122,6 +148,49 @@ pub fn require_root() {
     }
 }
 
+/// Checked via `net session`, which only succeeds when run elevated — the
+/// standard no-extra-dependency way to detect Administrator on Windows.
+#[cfg(windows)]
+pub fn require_root() {
+    let elevated = Command::new("net")
+        .args(["session"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !elevated {
+        eprintln!("{RED}Must run as Administrator. Exiting.{RESET}");
+        std::process::exit(1);
+    }
+}
+
+/// Turns Linux/macOS kernel IP forwarding on or off, needed while ARP
+/// spoofing so this machine actually relays the traffic it's intercepting
+/// instead of black-holing it. On Windows this is a no-op: WinDivert
+/// re-injects packets itself at the network-forward layer, it doesn't rely
+/// on `netsh interface ipv4 set global forwarding`.
+#[cfg(target_os = "linux")]
+pub fn enable_ip_forward() {
+    let _ = std::fs::write("/proc/sys/net/ipv4/ip_forward", "1");
+}
+#[cfg(target_os = "linux")]
+pub fn disable_ip_forward() {
+    let _ = std::fs::write("/proc/sys/net/ipv4/ip_forward", "0");
+}
+
+#[cfg(target_os = "macos")]
+pub fn enable_ip_forward() {
+    run_status("sysctl", &["-w", "net.inet.ip.forwarding=1"]);
+}
+#[cfg(target_os = "macos")]
+pub fn disable_ip_forward() {
+    run_status("sysctl", &["-w", "net.inet.ip.forwarding=0"]);
+}
+
+#[cfg(target_os = "windows")]
+pub fn enable_ip_forward() {}
+#[cfg(target_os = "windows")]
+pub fn disable_ip_forward() {}
+
 /// Prompts for a line of visible input.
 pub fn prompt(msg: &str) -> String {
     print_flush(msg);
@@ -129,6 +198,7 @@ pub fn prompt(msg: &str) -> String {
 }
 
 /// Prompts for a line of input with terminal echo turned off, for passwords.
+#[cfg(unix)]
 pub fn prompt_hidden(msg: &str) -> String {
     print_flush(msg);
     run_status("stty", &["-echo"]);
@@ -136,4 +206,12 @@ pub fn prompt_hidden(msg: &str) -> String {
     run_status("stty", &["echo"]);
     println!();
     input
+}
+
+// ponytail: Windows echo-suppression needs a console-mode API call (no
+// stdlib/CLI equivalent of `stty -echo`); until that's added, the password
+// is visible on Windows. Upgrade if that matters more than shipping.
+#[cfg(windows)]
+pub fn prompt_hidden(msg: &str) -> String {
+    prompt(msg)
 }

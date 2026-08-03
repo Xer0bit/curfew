@@ -2,15 +2,21 @@
 //! the activity log.
 
 use crate::network::lookup_mac;
+use crate::paths::CONFIG_DIR;
 use crate::schedule::{self, Window};
-use crate::system::run;
+use crate::spoof::SpoofSession;
 use std::collections::HashMap;
-use std::process::Child;
 use std::sync::{Arc, Mutex};
 
 const MAX_LOG_LINES: usize = 200;
-const ALLOWED_FILE: &str = "/etc/curfew/allowed_macs";
-const NAMES_FILE: &str = "/etc/curfew/names";
+
+fn allowed_file() -> std::path::PathBuf {
+    std::path::Path::new(CONFIG_DIR).join("allowed_macs")
+}
+
+fn names_file() -> std::path::PathBuf {
+    std::path::Path::new(CONFIG_DIR).join("names")
+}
 
 pub struct State {
     pub iface: String,
@@ -26,7 +32,7 @@ pub struct State {
     /// Optional daily window during which throttling is active; `None` means
     /// always active.
     pub schedule: Option<Window>,
-    pub arpspoof_children: HashMap<String, (Child, Child)>,
+    pub arpspoof_sessions: HashMap<String, SpoofSession>,
     macs: HashMap<String, String>,
     /// MAC -> friendly name (e.g. "Timmy's iPad"), persisted to disk.
     pub names: HashMap<String, String>,
@@ -46,7 +52,7 @@ impl State {
             exempt_online: Vec::new(),
             allowed_macs: load_allowed(),
             schedule: schedule::load(),
-            arpspoof_children: HashMap::new(),
+            arpspoof_sessions: HashMap::new(),
             macs: HashMap::new(),
             names: load_names(),
             logs: Vec::new(),
@@ -56,7 +62,7 @@ impl State {
 }
 
 pub fn load_allowed() -> Vec<String> {
-    std::fs::read_to_string(ALLOWED_FILE)
+    std::fs::read_to_string(allowed_file())
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.is_empty())
@@ -65,14 +71,14 @@ pub fn load_allowed() -> Vec<String> {
 }
 
 pub fn save_allowed(macs: &[String]) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::create_dir_all("/etc/curfew").unwrap();
-    std::fs::write(ALLOWED_FILE, macs.join("\n") + "\n").unwrap();
-    std::fs::set_permissions(ALLOWED_FILE, std::fs::Permissions::from_mode(0o600)).unwrap();
+    crate::paths::ensure_dir();
+    let path = allowed_file();
+    std::fs::write(&path, macs.join("\n") + "\n").unwrap();
+    crate::paths::restrict(&path.to_string_lossy());
 }
 
 fn load_names() -> HashMap<String, String> {
-    std::fs::read_to_string(NAMES_FILE)
+    std::fs::read_to_string(names_file())
         .unwrap_or_default()
         .lines()
         .filter_map(|l| l.split_once('='))
@@ -81,18 +87,18 @@ fn load_names() -> HashMap<String, String> {
 }
 
 pub fn save_names(names: &HashMap<String, String>) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::create_dir_all("/etc/curfew").unwrap();
+    crate::paths::ensure_dir();
+    let path = names_file();
     let content: String = names
         .iter()
         .map(|(mac, name)| format!("{mac}={name}\n"))
         .collect();
-    std::fs::write(NAMES_FILE, content).unwrap();
-    std::fs::set_permissions(NAMES_FILE, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(&path, content).unwrap();
+    crate::paths::restrict(&path.to_string_lossy());
 }
 
 fn timestamp() -> String {
-    run("date", &["+%H:%M:%S"])
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
 pub fn log_event(state: &Arc<Mutex<State>>, msg: &str) {
