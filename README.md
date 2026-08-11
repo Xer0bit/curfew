@@ -38,6 +38,8 @@ Data slowed so far: 4.2MB · Data at full speed: 1.1GB
 3) Set bedtime hours (when to slow the internet)
 4) Give a device a nickname
 5) See what's been happening
+6) Change how slow the internet is
+7) Give everyone full speed for a while
 0) Stop Curfew (put everyone back to normal)
 ----------------------------------------------------------------
 Choose an option:
@@ -146,9 +148,12 @@ sudo curfew
 
 Set a password on first run. Pick your Wi-Fi interface. Everything else on
 the network gets throttled automatically — pick option `1` to give a device
-(yourself, your partner) permanent full speed, saved across restarts. `0` or
-`Ctrl+C` restores everyone instantly. The dashboard refreshes itself every
-couple of seconds, so it's always showing current state.
+(yourself, your partner) permanent full speed, saved across restarts. Change
+how slow everyone else is at any time with option `6`, or hand out a
+temporary full-speed break (homework's done, movie night) with option `7`
+that ends on its own. `0` or `Ctrl+C` restores everyone instantly. The
+dashboard refreshes itself every couple of seconds, so it's always showing
+current state.
 
 ## Why
 

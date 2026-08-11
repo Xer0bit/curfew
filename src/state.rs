@@ -40,6 +40,10 @@ pub struct State {
     /// Number of scan cycles completed since startup — proof the background
     /// monitor thread is alive, shown in the header as a heartbeat.
     pub scan_count: u64,
+    /// If set and still in the future, everyone gets full speed until then
+    /// (a temporary "break" the owner granted); the monitor clears it once
+    /// it passes.
+    pub pause_until: Option<std::time::Instant>,
 }
 
 impl State {
@@ -57,6 +61,7 @@ impl State {
             names: load_names(),
             logs: Vec::new(),
             scan_count: 0,
+            pause_until: None,
         }
     }
 }

@@ -27,21 +27,6 @@ use system::{enable_ip_forward, missing_dependencies, prompt, require_root};
 
 const SCAN_INTERVAL_SECS: u64 = 15;
 
-/// Remembers a small setup choice (the Wi-Fi to use, how slow to make things)
-/// so returning users are never asked twice. Same config dir as the exempt
-/// list and schedule.
-fn load_saved(name: &str) -> Option<String> {
-    std::fs::read_to_string(std::path::Path::new(paths::CONFIG_DIR).join(name))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
-fn save_saved(name: &str, value: &str) {
-    paths::ensure_dir();
-    let _ = std::fs::write(std::path::Path::new(paths::CONFIG_DIR).join(name), value);
-}
-
 /// Asks, in plain words, how slow the other devices should be. Only ever
 /// shown once (the answer is remembered).
 fn ask_rate_friendly() -> String {
@@ -96,15 +81,30 @@ fn spawn_monitor(
                 st.scan_count += 1;
             }
 
-            let sched = state.lock().unwrap().schedule.clone();
-            let active = schedule::is_active(&sched);
+            // A break (option 7) grants full speed to everyone until its time
+            // is up; expiring it here means the very next scan re-throttles.
+            let (sched, paused) = {
+                let mut st = state.lock().unwrap();
+                let paused = match st.pause_until {
+                    Some(until) if std::time::Instant::now() < until => true,
+                    Some(_) => {
+                        st.pause_until = None;
+                        false
+                    }
+                    None => false,
+                };
+                (st.schedule.clone(), paused)
+            };
+            let active = schedule::is_active(&sched) && !paused;
 
             if active != curfew_active {
                 curfew_active = active;
                 let msg = if active {
-                    "Curfew window started, throttling resumes."
+                    "Slowing resumed."
+                } else if paused {
+                    "Break started — everyone has full speed for now."
                 } else {
-                    "Curfew window ended, full speed until next window."
+                    "Bedtime hours ended — everyone has full speed."
                 };
                 state::log_event(&state, msg);
             }
@@ -187,8 +187,8 @@ fn main() {
 
     // A returning user has both of these saved from last time, so we skip
     // straight past every setup question.
-    let saved_iface = load_saved("iface");
-    let saved_rate = load_saved("rate");
+    let saved_iface = paths::load_setting("iface");
+    let saved_rate = paths::load_setting("rate");
     let first_time = saved_iface.is_none() && saved_rate.is_none();
 
     if first_time {
@@ -207,7 +207,7 @@ fn main() {
     let iface = iface_arg
         .or_else(|| saved_iface.filter(|s| network::list_wifi_interfaces().iter().any(|i| i == s)))
         .unwrap_or_else(network::select_interface);
-    save_saved("iface", &iface);
+    paths::save_setting("iface", &iface);
 
     let my_ip = network::get_own_ip(&iface);
     let gateway = network::get_gateway();
@@ -216,7 +216,7 @@ fn main() {
     let rate = rate_arg
         .or(saved_rate)
         .unwrap_or_else(ask_rate_friendly);
-    save_saved("rate", &rate);
+    paths::save_setting("rate", &rate);
 
     if first_time {
         println!();
@@ -254,5 +254,5 @@ fn main() {
         Arc::clone(&state),
     );
 
-    ui::run_menu(&iface, &my_ip, &rate, &state);
+    ui::run_menu(&iface, &my_ip, &state);
 }
