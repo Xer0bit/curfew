@@ -32,21 +32,26 @@ pub fn scan_devices(subnet: &str, exclude: &[String]) -> Result<Vec<String>, Str
 pub fn select_interface() -> String {
     let ifaces = list_wifi_interfaces();
     if ifaces.is_empty() {
-        eprintln!("{RED}No wireless interfaces found. Exiting.{RESET}");
+        eprintln!("{RED}No Wi-Fi found on this computer. Make sure you're connected to your home Wi-Fi, then try again.{RESET}");
         std::process::exit(1);
     }
-    println!("Wireless interfaces:");
+    // Almost every home computer has exactly one Wi-Fi — pick it automatically
+    // so there's nothing to answer.
+    if ifaces.len() == 1 {
+        return ifaces[0].clone();
+    }
+    println!("You have more than one Wi-Fi connection. Which one are you using?");
     for (i, name) in ifaces.iter().enumerate() {
         println!("  {}) {}", i + 1, name);
     }
     loop {
-        let choice = prompt("Select interface number: ");
+        let choice = prompt("Type its number and press Enter: ");
         if let Ok(n) = choice.parse::<usize>() {
             if n >= 1 && n <= ifaces.len() {
                 return ifaces[n - 1].clone();
             }
         }
-        println!("{RED}Invalid selection, try again.{RESET}");
+        println!("{RED}That wasn't one of the numbers above. Please try again.{RESET}");
     }
 }
 

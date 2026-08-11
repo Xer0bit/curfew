@@ -18,7 +18,7 @@ mod ui;
 #[cfg(target_os = "windows")]
 mod winshape;
 
-use colors::{BOLD, CYAN, DIM, GREEN, RED, RESET};
+use colors::{BOLD, CYAN, DIM, GREEN, RED, RESET, YELLOW};
 use state::State;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,6 +26,37 @@ use std::time::Duration;
 use system::{enable_ip_forward, missing_dependencies, prompt, require_root};
 
 const SCAN_INTERVAL_SECS: u64 = 15;
+
+/// Remembers a small setup choice (the Wi-Fi to use, how slow to make things)
+/// so returning users are never asked twice. Same config dir as the exempt
+/// list and schedule.
+fn load_saved(name: &str) -> Option<String> {
+    std::fs::read_to_string(std::path::Path::new(paths::CONFIG_DIR).join(name))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn save_saved(name: &str, value: &str) {
+    paths::ensure_dir();
+    let _ = std::fs::write(std::path::Path::new(paths::CONFIG_DIR).join(name), value);
+}
+
+/// Asks, in plain words, how slow the other devices should be. Only ever
+/// shown once (the answer is remembered).
+fn ask_rate_friendly() -> String {
+    println!();
+    println!("{BOLD}How slow should everyone else's internet be?{RESET}");
+    println!("  {BOLD}1{RESET}) Barely works  {DIM}— best for getting kids off screens (recommended){RESET}");
+    println!("  {BOLD}2{RESET}) Slow, but still usable");
+    let choice = prompt(&format!(
+        "{CYAN}Type 1 or 2 and press Enter (or just press Enter for the recommended one): {RESET}"
+    ));
+    match choice.trim() {
+        "2" => "256kbit".to_string(),
+        _ => "10kbit".to_string(),
+    }
+}
 
 fn parse_args() -> (Option<String>, Option<String>) {
     let mut iface = None;
@@ -152,34 +183,49 @@ fn main() {
         return;
     }
 
-    auth::authenticate();
-
     let (iface_arg, rate_arg) = parse_args();
 
-    // ponytail: cron/scheduled runs pass --iface/--rate to skip prompts; interactive
-    // runs still get the wizard.
-    let iface = iface_arg.unwrap_or_else(network::select_interface);
+    // A returning user has both of these saved from last time, so we skip
+    // straight past every setup question.
+    let saved_iface = load_saved("iface");
+    let saved_rate = load_saved("rate");
+    let first_time = saved_iface.is_none() && saved_rate.is_none();
+
+    if first_time {
+        println!();
+        println!("{BOLD}{CYAN}Welcome to Curfew.{RESET}");
+        println!("{DIM}This slows the internet down for every device on your Wi-Fi,{RESET}");
+        println!("{DIM}except the ones you choose. Good for getting kids off screens.{RESET}");
+        println!("{DIM}I'll ask a couple of quick questions once, then it runs by itself.{RESET}");
+    }
+
+    auth::authenticate();
+
+    // ponytail: cron/scheduled runs pass --iface/--rate to skip prompts; a
+    // returning interactive user reuses last time's saved answers; only a
+    // genuine first run asks anything.
+    let iface = iface_arg
+        .or_else(|| saved_iface.filter(|s| network::list_wifi_interfaces().iter().any(|i| i == s)))
+        .unwrap_or_else(network::select_interface);
+    save_saved("iface", &iface);
+
     let my_ip = network::get_own_ip(&iface);
     let gateway = network::get_gateway();
     let subnet = network::get_subnet(&iface);
 
-    println!();
-    println!("{BOLD}Interface{RESET} : {CYAN}{iface}{RESET}");
-    println!("{BOLD}Self IP{RESET}   : {GREEN}{my_ip}{RESET}  (exempted, full speed)");
-    println!("{BOLD}Gateway{RESET}   : {gateway}");
-    println!("{BOLD}Subnet{RESET}    : {subnet}");
-    println!();
+    let rate = rate_arg
+        .or(saved_rate)
+        .unwrap_or_else(ask_rate_friendly);
+    save_saved("rate", &rate);
 
-    let rate = rate_arg.unwrap_or_else(|| {
-        let rate_input = prompt(&format!(
-            "{CYAN}Throttle rate for other devices (e.g. 10kbit) [default 10kbit]: {RESET}"
-        ));
-        if rate_input.is_empty() {
-            "10kbit".to_string()
-        } else {
-            rate_input
-        }
-    });
+    if first_time {
+        println!();
+        println!("{GREEN}All set.{RESET}");
+        println!("  This computer (you) will always have {GREEN}full speed{RESET}.");
+        println!("  Everyone else on your Wi-Fi will be {YELLOW}slowed down{RESET}.");
+        println!("  To give someone full speed, choose {BOLD}option 1{RESET} once the screen appears.");
+        println!();
+    }
 
     let state = Arc::new(Mutex::new(State::new(
         iface.clone(),
@@ -198,9 +244,7 @@ fn main() {
     enable_ip_forward();
     tc::rebuild_tc_base(&iface, &rate);
 
-    println!("{GREEN}Self ({my_ip}) running at full speed.{RESET}");
-    println!("{DIM}Monitoring {subnet} for devices every {SCAN_INTERVAL_SECS}s.{RESET}");
-    println!();
+    println!("{DIM}Starting Curfew...{RESET}");
 
     spawn_monitor(
         iface.clone(),

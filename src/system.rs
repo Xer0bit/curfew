@@ -143,7 +143,7 @@ pub fn spin_while<T: Send + 'static>(label: &str, work: impl FnOnce() -> T + Sen
 pub fn require_root() {
     let uid = run("id", &["-u"]);
     if uid != "0" {
-        eprintln!("{RED}Must run as root (sudo). Exiting.{RESET}");
+        eprintln!("{RED}Please start it with sudo, like this:{RESET}  sudo curfew");
         std::process::exit(1);
     }
 }

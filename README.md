@@ -25,19 +25,20 @@
 ```
 $ sudo curfew
 
-Curfew — wlan0 — ● watching (14 checks so far)
-No curfew window set — throttling is always on.
+Curfew is on  ● watching your network (checked 14 times)
+No bedtime hours set — internet stays slowed all the time.
 ----------------------------------------------------------------
 192.168.1.42     you                     full speed
-192.168.1.27     Kid's iPad              throttled at 10kbit
-192.168.1.144    aa:bb:cc:dd:ee:ff       throttled at 10kbit
+192.168.1.27     Kid's iPad              slowed right down
+192.168.1.144    aa:bb:cc:dd:ee:ff       slowed right down
+Data slowed so far: 4.2MB · Data at full speed: 1.1GB
 ----------------------------------------------------------------
 1) Give a device full speed
-2) Revoke full speed from a device
-3) Set or change the curfew schedule
-4) Name a device
-5) View activity log
-0) Stop and restore everyone's internet
+2) Take full speed away from a device
+3) Set bedtime hours (when to slow the internet)
+4) Give a device a nickname
+5) See what's been happening
+0) Stop Curfew (put everyone back to normal)
 ----------------------------------------------------------------
 Choose an option:
 ```

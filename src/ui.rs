@@ -13,6 +13,16 @@ use std::time::Duration;
 
 const REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 
+/// Plain-words version of the raw throttle rate, for the dashboard. A 60+
+/// user shouldn't have to know what "10kbit" means.
+fn friendly_rate(rate: &str) -> &'static str {
+    match rate {
+        "10kbit" => "slowed right down",
+        "256kbit" => "slowed down",
+        _ => "slowed down",
+    }
+}
+
 fn format_bytes(n: u64) -> String {
     const KB: f64 = 1024.0;
     let n = n as f64;
@@ -96,17 +106,17 @@ fn draw_dashboard(state: &Arc<Mutex<State>>, iface: &str, my_ip: &str, rate: &st
         "○"
     };
 
-    println!("{BOLD}{CYAN}Curfew{RESET}{DIM} — {iface} — {GREEN}{pulse}{RESET}{DIM} watching ({scans} checks so far){RESET}");
+    println!("{BOLD}{CYAN}Curfew is on{RESET}{DIM}  {GREEN}{pulse}{RESET}{DIM} watching your network (checked {scans} times){RESET}");
     match &sched {
         Some((start, end)) if schedule::is_active(&sched) => {
-            println!("{DIM}Curfew window {start}-{end}: {RED}active now{RESET}");
+            println!("{DIM}Bedtime hours {start}-{end}: {RED}on now, internet is slowed{RESET}");
         }
         Some((start, end)) => {
             println!(
-                "{DIM}Curfew window {start}-{end}: {GREEN}paused, full speed for everyone{RESET}"
+                "{DIM}Bedtime hours {start}-{end}: {GREEN}off now, everyone has full speed{RESET}"
             );
         }
-        None => println!("{DIM}No curfew window set — throttling is always on.{RESET}"),
+        None => println!("{DIM}No bedtime hours set — internet stays slowed all the time.{RESET}"),
     }
     println!("{}", "-".repeat(64));
 
@@ -115,19 +125,20 @@ fn draw_dashboard(state: &Arc<Mutex<State>>, iface: &str, my_ip: &str, rate: &st
         ""
     );
 
+    let slowed = friendly_rate(rate);
     let rows = device_rows(state, iface);
     if rows.is_empty() {
-        println!("{DIM}No other devices seen yet — first check runs shortly.{RESET}");
+        println!("{DIM}No other devices found yet — still looking...{RESET}");
     } else {
         for row in &rows {
             if row.throttled {
                 println!(
-                    "{RED}{:<16}{RESET} {:<24}{YELLOW}throttled at {rate}{RESET}",
+                    "{RED}{:<16}{RESET} {:<24}{YELLOW}{slowed}{RESET}",
                     row.ip, row.label
                 );
             } else {
                 println!(
-                    "{GREEN}{:<16}{RESET} {:<24}{GREEN}full speed (exempt){RESET}",
+                    "{GREEN}{:<16}{RESET} {:<24}{GREEN}full speed (you allowed this one){RESET}",
                     row.ip, row.label
                 );
             }
@@ -135,7 +146,7 @@ fn draw_dashboard(state: &Arc<Mutex<State>>, iface: &str, my_ip: &str, rate: &st
     }
     let (throttled_bytes, fast_bytes) = tc::class_stats(iface);
     println!(
-        "{DIM}Traffic seen — throttled lane: {} · fast lane: {}{RESET}",
+        "{DIM}Data slowed so far: {} · Data at full speed: {}{RESET}",
         format_bytes(throttled_bytes),
         format_bytes(fast_bytes)
     );
@@ -144,21 +155,21 @@ fn draw_dashboard(state: &Arc<Mutex<State>>, iface: &str, my_ip: &str, rate: &st
 
 fn draw_menu() {
     println!("{BOLD}1{RESET}) Give a device full speed");
-    println!("{BOLD}2{RESET}) Revoke full speed from a device");
-    println!("{BOLD}3{RESET}) Set or change the curfew schedule");
-    println!("{BOLD}4{RESET}) Name a device");
-    println!("{BOLD}5{RESET}) View activity log");
-    println!("{BOLD}0{RESET}) Stop and restore everyone's internet");
+    println!("{BOLD}2{RESET}) Take full speed away from a device");
+    println!("{BOLD}3{RESET}) Set bedtime hours (when to slow the internet)");
+    println!("{BOLD}4{RESET}) Give a device a nickname");
+    println!("{BOLD}5{RESET}) See what's been happening");
+    println!("{BOLD}0{RESET}) Stop Curfew (put everyone back to normal)");
     println!("{}", "-".repeat(64));
 }
 
 fn print_logs(state: &Arc<Mutex<State>>) {
     clear_screen();
-    println!("{BOLD}{CYAN}Curfew — activity log{RESET}");
+    println!("{BOLD}{CYAN}What's been happening{RESET}");
     println!("{}", "-".repeat(64));
     let logs = state.lock().unwrap().logs.clone();
     if logs.is_empty() {
-        println!("{DIM}No activity yet.{RESET}");
+        println!("{DIM}Nothing yet.{RESET}");
     } else {
         for line in logs.iter().rev().take(40).rev() {
             println!("{DIM}{line}{RESET}");
@@ -173,17 +184,17 @@ fn print_logs(state: &Arc<Mutex<State>>) {
 fn allow_menu(iface: &str, state: &Arc<Mutex<State>>) {
     let devices = state.lock().unwrap().devices.clone();
     if devices.is_empty() {
-        println!("\n{DIM}No devices are currently throttled.{RESET}\n");
-        prompt("Press Enter to continue...");
+        println!("\n{DIM}Nobody is being slowed down right now.{RESET}\n");
+        prompt("Press Enter to go back...");
         return;
     }
-    println!();
+    println!("\n{BOLD}Which device should get full speed?{RESET}");
     for (i, ip) in devices.iter().enumerate() {
         let label = display_name(state, iface, ip);
         println!("  {CYAN}{}){RESET} {RED}{ip}{RESET}  ({label})", i + 1);
     }
     let choice = prompt(&format!(
-        "\n{CYAN}Number to give full speed to (blank to cancel): {RESET}"
+        "\n{CYAN}Type its number and press Enter (or just Enter to go back): {RESET}"
     ));
     if choice.is_empty() {
         return;
@@ -200,11 +211,11 @@ fn allow_menu(iface: &str, state: &Arc<Mutex<State>>) {
             }
             st.exempt_online.push(ip.clone());
             drop(st);
-            println!("{GREEN}{ip} ({mac}) now always gets full speed.{RESET}\n");
+            println!("{GREEN}Done. {ip} ({mac}) will always have full speed from now on.{RESET}\n");
         }
-        _ => println!("{RED}Invalid choice.{RESET}\n"),
+        _ => println!("{RED}That wasn't one of the numbers above.{RESET}\n"),
     }
-    prompt("Press Enter to continue...");
+    prompt("Press Enter to go back...");
 }
 
 /// Removes a previously-exempted MAC; it'll be throttled again next time it's
@@ -212,16 +223,16 @@ fn allow_menu(iface: &str, state: &Arc<Mutex<State>>) {
 fn revoke_menu(state: &Arc<Mutex<State>>) {
     let allowed = state.lock().unwrap().allowed_macs.clone();
     if allowed.is_empty() {
-        println!("\n{DIM}No one is exempted right now.{RESET}\n");
-        prompt("Press Enter to continue...");
+        println!("\n{DIM}Nobody is on the full-speed list right now.{RESET}\n");
+        prompt("Press Enter to go back...");
         return;
     }
-    println!();
+    println!("\n{BOLD}Which device should go back to being slowed down?{RESET}");
     for (i, mac) in allowed.iter().enumerate() {
         println!("  {CYAN}{}){RESET} {mac}", i + 1);
     }
     let choice = prompt(&format!(
-        "\n{CYAN}Number to remove from the exempt list (blank to cancel): {RESET}"
+        "\n{CYAN}Type its number and press Enter (or just Enter to go back): {RESET}"
     ));
     if choice.is_empty() {
         return;
@@ -234,11 +245,11 @@ fn revoke_menu(state: &Arc<Mutex<State>>) {
             save_allowed(&st.allowed_macs);
             drop(st);
             purge_exempt_online(state, &mac);
-            println!("{YELLOW}{mac} will be throttled again once seen.{RESET}\n");
+            println!("{YELLOW}Done. {mac} will be slowed down again shortly.{RESET}\n");
         }
-        _ => println!("{RED}Invalid choice.{RESET}\n"),
+        _ => println!("{RED}That wasn't one of the numbers above.{RESET}\n"),
     }
-    prompt("Press Enter to continue...");
+    prompt("Press Enter to go back...");
 }
 
 /// Sets, changes, or clears the daily curfew window. With no window set,
@@ -247,27 +258,28 @@ fn schedule_menu(state: &Arc<Mutex<State>>) {
     let current = state.lock().unwrap().schedule.clone();
     println!();
     match &current {
-        Some((s, e)) => println!("  Current curfew window: {s} - {e}"),
-        None => println!("  {DIM}No window set, throttling is always active.{RESET}"),
+        Some((s, e)) => println!("  Right now, bedtime hours are {s} to {e}."),
+        None => println!("  {DIM}No bedtime hours set — the internet is slowed all the time.{RESET}"),
     }
-    let start = prompt("\nStart time HH:MM (blank to clear the schedule): ");
+    println!("{DIM}Use 24-hour time, like 20:00 for 8pm or 07:00 for 7am.{RESET}");
+    let start = prompt("\nStart slowing the internet at (or just Enter to turn bedtime hours off): ");
     if start.is_empty() {
         state.lock().unwrap().schedule = None;
         schedule::clear();
-        println!("{GREEN}Schedule cleared, throttling is always active now.{RESET}\n");
-        prompt("Press Enter to continue...");
+        println!("{GREEN}Done. The internet will stay slowed all the time now.{RESET}\n");
+        prompt("Press Enter to go back...");
         return;
     }
-    let end = prompt("End time HH:MM: ");
+    let end = prompt("Go back to full speed at: ");
     if !schedule::valid(&start) || !schedule::valid(&end) {
-        println!("{RED}Invalid time, expected 24-hour HH:MM (e.g. 20:00).{RESET}\n");
-        prompt("Press Enter to continue...");
+        println!("{RED}That didn't look like a time. Use 24-hour time like 20:00. Nothing changed.{RESET}\n");
+        prompt("Press Enter to go back...");
         return;
     }
     schedule::save(&start, &end);
     state.lock().unwrap().schedule = Some((start.clone(), end.clone()));
-    println!("{GREEN}Curfew window set: {start} - {end}{RESET}\n");
-    prompt("Press Enter to continue...");
+    println!("{GREEN}Done. Internet will be slowed from {start} to {end} each day.{RESET}\n");
+    prompt("Press Enter to go back...");
 }
 
 /// Gives a currently-throttled device a friendly name (e.g. "Timmy's iPad")
@@ -275,17 +287,17 @@ fn schedule_menu(state: &Arc<Mutex<State>>) {
 fn name_menu(iface: &str, state: &Arc<Mutex<State>>) {
     let devices = state.lock().unwrap().devices.clone();
     if devices.is_empty() {
-        println!("\n{DIM}No throttled devices to name.{RESET}\n");
-        prompt("Press Enter to continue...");
+        println!("\n{DIM}No devices to nickname yet.{RESET}\n");
+        prompt("Press Enter to go back...");
         return;
     }
-    println!();
+    println!("\n{BOLD}Which device do you want to nickname?{RESET}");
     for (i, ip) in devices.iter().enumerate() {
         let label = display_name(state, iface, ip);
         println!("  {CYAN}{}){RESET} {ip}  ({label})", i + 1);
     }
     let choice = prompt(&format!(
-        "\n{CYAN}Number to name (blank to cancel): {RESET}"
+        "\n{CYAN}Type its number and press Enter (or just Enter to go back): {RESET}"
     ));
     if choice.is_empty() {
         return;
@@ -293,12 +305,12 @@ fn name_menu(iface: &str, state: &Arc<Mutex<State>>) {
     let n: usize = match choice.parse() {
         Ok(n) if n >= 1 && n <= devices.len() => n,
         _ => {
-            println!("{RED}Invalid choice.{RESET}\n");
-            prompt("Press Enter to continue...");
+            println!("{RED}That wasn't one of the numbers above.{RESET}\n");
+            prompt("Press Enter to go back...");
             return;
         }
     };
-    let name = prompt("Name: ");
+    let name = prompt("Type a nickname (like Tim's iPad) and press Enter: ");
     if name.is_empty() {
         return;
     }
@@ -307,8 +319,8 @@ fn name_menu(iface: &str, state: &Arc<Mutex<State>>) {
     st.names.insert(mac, name.clone());
     save_names(&st.names);
     drop(st);
-    println!("{GREEN}Saved as \"{name}\".{RESET}\n");
-    prompt("Press Enter to continue...");
+    println!("{GREEN}Done. That device is now called \"{name}\".{RESET}\n");
+    prompt("Press Enter to go back...");
 }
 
 /// Redraws the dashboard every [`REFRESH_INTERVAL`] until the user actually
@@ -337,8 +349,8 @@ pub fn run_menu(iface: &str, my_ip: &str, rate: &str, state: &Arc<Mutex<State>>)
             "0" => cleanup(state),
             "" => {}
             _ => {
-                println!("{RED}Please enter a number from the menu.{RESET}");
-                prompt("Press Enter to continue...");
+                println!("{RED}Please type one of the numbers shown in the menu (0 to 5).{RESET}");
+                prompt("Press Enter to go back...");
             }
         }
     }
