@@ -25,32 +25,78 @@ pub enum SpoofSession {
 #[cfg(unix)]
 mod imp {
     use super::SpoofSession;
-    use std::process::{Command, Stdio};
+    use std::collections::HashSet;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::{Mutex, OnceLock};
+
+    /// PIDs of the `arpspoof` processes Curfew started.
+    ///
+    /// Tracked explicitly so teardown kills exactly our own children. Cleanup
+    /// used to run `pkill -f "arpspoof -i <iface>"`, which also killed any
+    /// unrelated `arpspoof` the user happened to be running on that
+    /// interface — someone else's capture, mid-investigation.
+    fn our_pids() -> &'static Mutex<HashSet<u32>> {
+        static PIDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
+        PIDS.get_or_init(|| Mutex::new(HashSet::new()))
+    }
+
+    fn with_pids<T>(f: impl FnOnce(&mut HashSet<u32>) -> T) -> T {
+        let mut guard = our_pids()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&mut guard)
+    }
+
+    fn spawn_arpspoof(iface: &str, target: &str, host: &str) -> Option<Child> {
+        Command::new("arpspoof")
+            .args(["-i", iface, "-t", target, host])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()
+    }
 
     pub fn start(iface: &str, gateway: &str, ip: &str) -> Option<SpoofSession> {
-        let c1 = Command::new("arpspoof")
-            .args(["-i", iface, "-t", ip, gateway])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let c2 = Command::new("arpspoof")
-            .args(["-i", iface, "-t", gateway, ip])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        match (c1, c2) {
-            (Ok(c1), Ok(c2)) => Some(SpoofSession::Children(Box::new(c1), Box::new(c2))),
-            _ => None,
+        // Both directions are needed: one poisons the device's view of the
+        // gateway, the other the gateway's view of the device.
+        let first = spawn_arpspoof(iface, ip, gateway);
+        let second = spawn_arpspoof(iface, gateway, ip);
+
+        match (first, second) {
+            (Some(c1), Some(c2)) => {
+                with_pids(|pids| {
+                    pids.insert(c1.id());
+                    pids.insert(c2.id());
+                });
+                Some(SpoofSession::Children(Box::new(c1), Box::new(c2)))
+            }
+            (first, second) => {
+                // Half a spoof is worse than none: it black-holes traffic in
+                // one direction and nothing tracks the process to stop it.
+                for mut child in [first, second].into_iter().flatten() {
+                    let pid = child.id();
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    with_pids(|pids| {
+                        pids.remove(&pid);
+                    });
+                }
+                None
+            }
         }
     }
 
     pub fn stop(session: SpoofSession) {
         #[allow(irrefutable_let_patterns)]
         if let SpoofSession::Children(mut c1, mut c2) = session {
-            let _ = c1.kill();
-            let _ = c1.wait();
-            let _ = c2.kill();
-            let _ = c2.wait();
+            for child in [&mut *c1, &mut *c2] {
+                let pid = child.id();
+                let _ = child.kill();
+                let _ = child.wait();
+                with_pids(|pids| {
+                    pids.remove(&pid);
+                });
+            }
         }
     }
 
@@ -58,8 +104,12 @@ mod imp {
         crate::system::run_quiet("arping", &["-c", "2", "-A", "-I", iface, ip]);
     }
 
-    pub fn kill_all(iface: &str) {
-        crate::system::run_quiet("pkill", &["-f", &format!("arpspoof -i {iface}")]);
+    /// Kills every `arpspoof` process Curfew started, and nothing else.
+    pub fn kill_all(_iface: &str) {
+        let pids: Vec<u32> = with_pids(|pids| pids.drain().collect());
+        for pid in pids {
+            crate::system::run_quiet("kill", &["-9", &pid.to_string()]);
+        }
     }
 }
 

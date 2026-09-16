@@ -1,6 +1,6 @@
 [package]
 name = "curfew"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Give your household's network a bedtime — throttle everyone except who you exempt."
 
@@ -22,3 +22,7 @@ pnet = "0.35"
 
 [profile.release]
 opt-level = 2
+# Drop debug symbols from release builds. Roughly 20% off the binary, and it
+# keeps the artifact identical whether built here or in CI, instead of
+# depending on a separate strip step that's easy to forget.
+strip = true

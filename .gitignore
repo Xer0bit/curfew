@@ -5,3 +5,7 @@
 .idea/
 *.swp
 .DS_Store
+graphify-out
+
+# release artifacts built by .github/workflows/release.yml
+dist/

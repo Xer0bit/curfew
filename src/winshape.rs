@@ -1,38 +1,42 @@
 //! Windows traffic shaping. There's no built-in equivalent of Linux `tc` or
 //! macOS `dnctl`, so this intercepts every forwarded IPv4 packet via
-//! WinDivert's forward layer, applies a token-bucket rate limit to packets
-//! whose source or destination is a throttled IP, and re-injects everything
-//! else immediately at full speed.
+//! WinDivert's forward layer and applies a per-device token bucket (see
+//! [`crate::bucket`]) to packets belonging to a managed device. Blocked
+//! devices' packets are simply not re-injected. Everything else is forwarded
+//! immediately at full speed.
 //!
-//! Unverified against real hardware in this session — no Windows build/test
-//! environment was available. `WinDivert::forward`/`recv`/`send` signatures
-//! and `WinDivertFlags::new()` are confirmed against the crate's published
-//! docs, but the end-to-end packet loop has not been run.
+//! Unverified against real hardware: no Windows build/test environment was
+//! available, and the vendored WinDivert crate needs a mingw C toolchain to
+//! cross-compile. `WinDivert::forward`/`recv`/`send` signatures and
+//! `WinDivertFlags::new()` are confirmed against the crate's published docs,
+//! and all the packet/rate logic lives in the unit-tested [`crate::bucket`]
+//! module, but the end-to-end loop has not been run.
 
+use crate::bucket::{ipv4_addrs, Buckets, Verdict};
 use crate::colors::{RED, RESET};
-use std::collections::HashSet;
+use crate::rate;
+use crate::tc::DeviceSpec;
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use windivert::prelude::*;
 
 struct Shared {
-    targets: Mutex<HashSet<Ipv4Addr>>,
-    rate_bps: AtomicU64,
+    buckets: Mutex<Buckets>,
     throttled_bytes: AtomicU64,
     fast_bytes: AtomicU64,
     stop: AtomicBool,
 }
 
-static SHARED: OnceLock<std::sync::Arc<Shared>> = OnceLock::new();
+static SHARED: OnceLock<Arc<Shared>> = OnceLock::new();
 
-fn shared() -> &'static std::sync::Arc<Shared> {
+fn shared() -> &'static Arc<Shared> {
     SHARED.get_or_init(|| {
-        std::sync::Arc::new(Shared {
-            targets: Mutex::new(HashSet::new()),
-            rate_bps: AtomicU64::new(10_000 / 8), // overwritten by start()
+        Arc::new(Shared {
+            buckets: Mutex::new(Buckets::default()),
             throttled_bytes: AtomicU64::new(0),
             fast_bytes: AtomicU64::new(0),
             stop: AtomicBool::new(false),
@@ -40,33 +44,38 @@ fn shared() -> &'static std::sync::Arc<Shared> {
     })
 }
 
-/// Parses a `tc`-style rate ("10kbit") into bytes/sec.
-fn parse_rate_bps(rate: &str) -> u64 {
-    let lower = rate.to_lowercase();
-    let split_at = lower.find(|c: char| c.is_alphabetic()).unwrap_or(lower.len());
-    let (num, unit) = lower.split_at(split_at);
-    let n: f64 = num.parse().unwrap_or(10.0);
-    let bits_per_sec = match unit {
-        "kbit" | "kbps" => n * 1_000.0,
-        "mbit" | "mbps" => n * 1_000_000.0,
-        _ => n,
-    };
-    ((bits_per_sec / 8.0).max(1.0)) as u64
+/// Converts a bit-rate string into bytes/sec. `1` is the floor so a plain
+/// divide-by-eight can't round a very slow lane down to a stall.
+fn bytes_per_sec(rate_str: &str) -> u64 {
+    rate::parse_bps(rate_str)
+        .map(|bps| (bps / 8).max(1))
+        .unwrap_or(1)
 }
 
-fn ipv4_addrs(bytes: &[u8]) -> Option<(Ipv4Addr, Ipv4Addr)> {
-    if bytes.len() < 20 || (bytes[0] >> 4) != 4 {
-        return None;
+/// Applies `targets` to the shaper and starts the interception thread on the
+/// first call.
+///
+/// Every target carries its own rate, so there's no separate household
+/// default to apply here — the caller has already resolved each device's
+/// effective speed. `FullSpeed` devices are left out of the limits map
+/// entirely, so their packets take the fast path — the same "explicit
+/// throttle list, implicit fast lane" shape the other backends use.
+pub fn configure(_default_rate: &str, targets: &[(String, DeviceSpec)]) {
+    let mut limits: HashMap<Ipv4Addr, u64> = HashMap::new();
+    for (ip, spec) in targets {
+        let Ok(addr) = ip.parse::<Ipv4Addr>() else {
+            continue;
+        };
+        let bps = match spec {
+            // A zero limit is the shaper's "block" signal.
+            DeviceSpec::Block => 0,
+            DeviceSpec::ThrottleAt(rate) => bytes_per_sec(rate),
+        };
+        limits.insert(addr, bps);
     }
-    let src = Ipv4Addr::new(bytes[12], bytes[13], bytes[14], bytes[15]);
-    let dst = Ipv4Addr::new(bytes[16], bytes[17], bytes[18], bytes[19]);
-    Some((src, dst))
-}
 
-/// Starts (once) the interception thread and (re)sets the throttle rate.
-pub fn start(rate: &str) {
     let s = shared();
-    s.rate_bps.store(parse_rate_bps(rate), Ordering::Relaxed);
+    s.buckets.lock().unwrap().set_limits(limits);
     s.stop.store(false, Ordering::Relaxed);
 
     static STARTED: OnceLock<()> = OnceLock::new();
@@ -74,7 +83,7 @@ pub fn start(rate: &str) {
         return; // worker already running
     }
 
-    let s = std::sync::Arc::clone(shared());
+    let s = Arc::clone(shared());
     thread::spawn(move || {
         let wd = match WinDivert::<ForwardLayer>::forward("true", 0, WinDivertFlags::new()) {
             Ok(wd) => wd,
@@ -85,8 +94,6 @@ pub fn start(rate: &str) {
         };
 
         let mut buf = vec![0u8; 65535];
-        let mut tokens: f64 = 0.0;
-        let mut last_refill = Instant::now();
 
         while !s.stop.load(Ordering::Relaxed) {
             let packet = match wd.recv(&mut buf) {
@@ -98,29 +105,39 @@ pub fn start(rate: &str) {
             };
 
             let len = packet.data.len();
-            let is_target = ipv4_addrs(&packet.data)
-                .map(|(src, dst)| {
-                    let targets = s.targets.lock().unwrap();
-                    targets.contains(&src) || targets.contains(&dst)
+
+            // Which managed device, if any, does this packet belong to?
+            let peer = {
+                let buckets = s.buckets.lock().unwrap();
+                ipv4_addrs(&packet.data).and_then(|(src, dst)| {
+                    if buckets.limit_for(&src).is_some() {
+                        Some(src)
+                    } else if buckets.limit_for(&dst).is_some() {
+                        Some(dst)
+                    } else {
+                        None
+                    }
                 })
-                .unwrap_or(false);
+            };
 
-            if is_target {
-                let rate = s.rate_bps.load(Ordering::Relaxed) as f64;
-                let now = Instant::now();
-                tokens += now.duration_since(last_refill).as_secs_f64() * rate;
-                tokens = tokens.min(rate); // cap burst to ~1s worth
-                last_refill = now;
-
-                tokens -= len as f64;
-                if tokens < 0.0 {
-                    let deficit_secs = -tokens / rate;
-                    thread::sleep(Duration::from_secs_f64(deficit_secs.min(2.0)));
-                    tokens = 0.0;
+            match peer {
+                Some(ip) => {
+                    let verdict = s.buckets.lock().unwrap().charge(ip, len, Instant::now());
+                    s.throttled_bytes.fetch_add(len as u64, Ordering::Relaxed);
+                    if verdict == Verdict::Drop {
+                        // Not re-injecting is what "blocked" means at this
+                        // layer.
+                        continue;
+                    }
+                    if let Verdict::Delay(wait) = verdict {
+                        if !wait.is_zero() {
+                            thread::sleep(wait);
+                        }
+                    }
                 }
-                s.throttled_bytes.fetch_add(len as u64, Ordering::Relaxed);
-            } else {
-                s.fast_bytes.fetch_add(len as u64, Ordering::Relaxed);
+                None => {
+                    s.fast_bytes.fetch_add(len as u64, Ordering::Relaxed);
+                }
             }
 
             let _ = wd.send(&packet);
@@ -128,15 +145,7 @@ pub fn start(rate: &str) {
     });
 }
 
-/// Adds `ip` to the throttled set. `_iface` is unused — WinDivert's forward
-/// layer sees all interfaces' forwarded traffic, not one at a time.
-pub fn add_target(_iface: &str, ip: &str) {
-    if let Ok(addr) = ip.parse::<Ipv4Addr>() {
-        shared().targets.lock().unwrap().insert(addr);
-    }
-}
-
-pub fn stats(_iface: &str) -> (u64, u64) {
+pub fn stats() -> (u64, u64) {
     let s = shared();
     (
         s.throttled_bytes.load(Ordering::Relaxed),
@@ -144,8 +153,8 @@ pub fn stats(_iface: &str) -> (u64, u64) {
     )
 }
 
-pub fn teardown_all(_iface: &str) {
+pub fn teardown_all() {
     let s = shared();
     s.stop.store(true, Ordering::Relaxed);
-    s.targets.lock().unwrap().clear();
+    s.buckets.lock().unwrap().set_limits(HashMap::new());
 }

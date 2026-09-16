@@ -1,0 +1,135 @@
+name: Release
+
+# Builds the Linux binary that setup.sh downloads, and attaches it to a
+# release.
+#
+# The asset name must stay exactly `curfew-linux-x86_64`: setup.sh builds that
+# URL directly from the latest release, so renaming it silently breaks the
+# `curl … | bash` install path for everyone.
+#
+# The binary is built against musl, not glibc, which makes it a static
+# executable with no libc version requirement. That matters here: building
+# against the runner's glibc would produce a binary that refuses to start on
+# anything older than the runner, and this tool is meant for older, low-power
+# boxes.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release and upload its assets
+
+env:
+  CARGO_TERM_COLOR: always
+  TARGET: x86_64-unknown-linux-musl
+  ASSET: curfew-linux-x86_64
+
+jobs:
+  linux:
+    name: Linux (x86_64, static)
+    runs-on: ubuntu-24.04
+    steps:
+      # actions/checkout is a GitHub-owned action. If you'd rather pin all
+      # third-party code by digest, replace `@v4` with the commit SHA.
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add "$TARGET"
+
+      - name: Build
+        run: cargo build --release --locked --target "$TARGET"
+
+      # A tagged release must not ship a binary whose idea of its own version
+      # disagrees with the tag — that's how you end up with a v0.4.0 download
+      # that reports 0.3.0.
+      - name: Check the binary's version matches the tag
+        if: github.ref_type == 'tag'
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(./target/$TARGET/release/curfew --version | awk '{print $2}')"
+          echo "tag=$GITHUB_REF_NAME binary=$actual"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Cargo.toml says $actual but the tag is $GITHUB_REF_NAME. Bump the version, or tag $actual."
+            exit 1
+          fi
+
+      # Guards the property the whole static build exists for. Without this,
+      # a future dependency change could quietly reintroduce a glibc
+      # requirement and nobody would notice until installs started failing.
+      - name: Check the binary is really static
+        run: |
+          set -euo pipefail
+          binary="./target/$TARGET/release/curfew"
+
+          # The authoritative check: a static binary resolves no libc symbols.
+          symbols="$(objdump -T "$binary" 2>/dev/null | grep -c GLIBC_ || true)"
+          if [ "$symbols" != "0" ]; then
+            echo "::error::$binary needs $symbols GLIBC symbol(s); it will fail to start on older distros."
+            exit 1
+          fi
+
+          # And it must not link a shared library of any kind.
+          if ldd "$binary" 2>&1 | grep -q '=>'; then
+            echo "::error::$binary is dynamically linked:"
+            ldd "$binary" || true
+            exit 1
+          fi
+
+          echo "Static, no glibc symbols."
+
+      - name: Smoke-test the binary
+        run: |
+          set -euo pipefail
+          binary="./target/$TARGET/release/curfew"
+          "$binary" --version
+          "$binary" --help > /dev/null
+          # Needs no root and no network, so it's safe to assert on.
+          "$binary" --status > /dev/null
+          # An unknown flag must be rejected, not ignored.
+          if "$binary" --definitely-not-a-flag > /dev/null 2>&1; then
+            echo "::error::an unknown flag was accepted"
+            exit 1
+          fi
+
+      - name: Name the asset and checksum it
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/$TARGET/release/curfew" "dist/$ASSET"
+          chmod 755 "dist/$ASSET"
+          (cd dist && sha256sum "$ASSET" > "$ASSET.sha256")
+          cat "dist/$ASSET.sha256"
+
+      # Manual runs have no tag to publish against, so leave the files to be
+      # downloaded from the run instead.
+      - name: Keep the artifact on manual runs
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: dist/*
+
+      - name: Publish the release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # Re-running a release (e.g. after fixing a build) should replace
+            # the assets rather than fail.
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" \
+              --title "Curfew $tag" \
+              --notes-file RELEASE_NOTES.md \
+              --verify-tag \
+              dist/*
+          fi

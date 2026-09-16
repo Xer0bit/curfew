@@ -1,0 +1,135 @@
+/* Curfew web panel.
+   No fonts, no frameworks, no external requests — the panel should work on a
+   phone on the home network without touching the internet. */
+
+:root {
+  --bg: #14161a;
+  --panel: #1c1f26;
+  --line: #2c313b;
+  --text: #e8eaed;
+  --dim: #9aa2af;
+  --accent: #6cc7ff;
+  --good: #6ee7a0;
+  --warn: #ffd166;
+  --bad: #ff7b72;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body.centred {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+
+h1 { font-size: 1.25rem; margin: 0; letter-spacing: 0.08em; text-transform: uppercase; }
+h2 { font-size: 0.95rem; margin: 0 0 0.75rem; color: var(--dim); font-weight: 600;
+     text-transform: uppercase; letter-spacing: 0.06em; }
+
+main { padding: 1rem; max-width: 62rem; margin: 0 auto; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+body.centred .card { width: 100%; max-width: 22rem; }
+
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; font-size: 0.75rem; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--dim); font-weight: 600;
+  padding: 0 0.5rem 0.5rem;
+}
+td { padding: 0.6rem 0.5rem; border-top: 1px solid var(--line); vertical-align: top; }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; }
+.dim { color: var(--dim); font-size: 0.85rem; }
+.good { color: var(--good); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+.status { font-size: 1.05rem; margin: 0 0 1rem; }
+.notice {
+  background: #24303f; border-left: 3px solid var(--accent);
+  padding: 0.6rem 0.8rem; border-radius: 4px; margin: 0 0 1rem;
+}
+
+.pill {
+  display: inline-block; margin-left: 0.4rem; padding: 0.05rem 0.4rem;
+  border: 1px solid currentColor; border-radius: 999px;
+  font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em;
+}
+
+.sites { margin-top: 0.25rem; word-break: break-word; }
+
+form.inline { display: inline; }
+form.row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.6rem; }
+form.row label { color: var(--dim); font-size: 0.9rem; }
+
+.actions form { display: inline-block; margin: 0 0.25rem 0.25rem 0; }
+
+label { display: block; font-size: 0.85rem; color: var(--dim); margin-bottom: 0.3rem; }
+
+input, select, button {
+  font: inherit;
+  color: var(--text);
+  background: #12141a;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  min-height: 40px;
+}
+
+input[type="number"] { width: 5.5rem; }
+
+button { cursor: pointer; background: var(--accent); color: #0d1117; border: none; font-weight: 600; }
+button:hover { filter: brightness(1.1); }
+button.secondary { background: #2c313b; color: var(--text); }
+button.danger { background: var(--bad); color: #2a0d0b; }
+
+form[action="/login"] { margin-top: 1rem; }
+form[action="/login"] input { width: 100%; margin-bottom: 0.75rem; }
+form[action="/login"] button { width: 100%; }
+
+ul.plain { list-style: none; margin: 0; padding: 0; }
+ul.plain li { padding: 0.4rem 0; border-top: 1px solid var(--line); display: flex;
+              justify-content: space-between; align-items: center; gap: 0.5rem; }
+ul.plain li:first-child { border-top: none; }
+
+a { color: var(--accent); }
+
+footer { max-width: 62rem; margin: 0 auto; padding: 0 1rem; font-size: 0.8rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* Narrow screens: stack the table so a phone can read it. */
+@media (max-width: 40rem) {
+  thead { display: none; }
+  tr { display: block; border-top: 1px solid var(--line); padding: 0.6rem 0; }
+  td { display: block; border: none; padding: 0.15rem 0; }
+  td.actions { padding-top: 0.5rem; }
+}

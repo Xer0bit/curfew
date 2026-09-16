@@ -6,27 +6,82 @@
 use crate::colors::{RED, RESET};
 use crate::system::{prompt, try_run};
 
-/// Lists device IPs on `subnet`, skipping anything in `exclude`. `Err` means
-/// the scan itself failed to run (e.g. `nmap` missing or crashed) — distinct
-/// from a clean scan that simply found no devices. Same on every OS: `nmap`
-/// prints identical `-sn` output on Linux, macOS, and Windows.
-pub fn scan_devices(subnet: &str, exclude: &[String]) -> Result<Vec<String>, String> {
-    let out = try_run("nmap", &["-sn", subnet])?;
-    let mut devices = Vec::new();
-    for line in out.lines() {
+/// One device found by a scan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredDevice {
+    pub ip: String,
+    /// Reverse-DNS/hostname nmap resolved, if any.
+    pub hostname: Option<String>,
+    /// MAC, when nmap could read it. Only available on the local segment and
+    /// only when running with raw-socket privileges — which Curfew has, being
+    /// root — so this is usually Some on Linux, and saves a separate lookup.
+    pub mac: Option<String>,
+}
+
+/// Parses `nmap -sn` output.
+///
+/// Two line shapes matter:
+///
+/// ```text
+/// Nmap scan report for kids-ipad (192.168.1.27)
+/// Host is up (0.012s latency).
+/// MAC Address: 00:14:51:11:22:33 (Apple)
+///
+/// Nmap scan report for 192.168.1.1
+/// Host is up.
+/// ```
+///
+/// The `MAC Address:` line belongs to the report above it, so the parser
+/// tracks the device it's currently filling in.
+pub fn parse_nmap_output(output: &str) -> Vec<DiscoveredDevice> {
+    let mut devices: Vec<DiscoveredDevice> = Vec::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+
         if let Some(rest) = line.strip_prefix("Nmap scan report for ") {
             let rest = rest.trim();
-            // nmap prints "<hostname> (<ip>)" when reverse DNS resolves, "<ip>" otherwise.
-            let ip = match (rest.rfind('('), rest.ends_with(')')) {
-                (Some(start), true) => rest[start + 1..rest.len() - 1].to_string(),
-                _ => rest.to_string(),
+            // "<hostname> (<ip>)" when reverse DNS resolved, "<ip>" otherwise.
+            let (hostname, ip) = match (rest.rfind('('), rest.ends_with(')')) {
+                (Some(start), true) => {
+                    let host = rest[..start].trim();
+                    let ip = &rest[start + 1..rest.len() - 1];
+                    let host = (!host.is_empty()).then(|| host.to_string());
+                    (host, ip.to_string())
+                }
+                _ => (None, rest.to_string()),
             };
-            if !exclude.contains(&ip) {
-                devices.push(ip);
+            devices.push(DiscoveredDevice {
+                ip,
+                hostname,
+                mac: None,
+            });
+            continue;
+        }
+
+        if let Some(rest) = line.strip_prefix("MAC Address: ") {
+            // "00:14:51:11:22:33 (Apple)"
+            let mac = rest.split_whitespace().next().unwrap_or_default();
+            if let (Some(device), Some(mac)) = (devices.last_mut(), crate::oui::normalize_mac(mac))
+            {
+                device.mac = Some(mac);
             }
         }
     }
-    Ok(devices)
+
+    devices
+}
+
+/// Lists devices on `subnet`, skipping anything in `exclude`. `Err` means the
+/// scan itself failed to run (e.g. `nmap` missing or crashed) — distinct from
+/// a clean scan that simply found no devices. Same on every OS: `nmap` prints
+/// identical `-sn` output on Linux, macOS, and Windows.
+pub fn scan_devices(subnet: &str, exclude: &[String]) -> Result<Vec<DiscoveredDevice>, String> {
+    let out = try_run("nmap", &["-sn", subnet])?;
+    Ok(parse_nmap_output(&out)
+        .into_iter()
+        .filter(|device| !exclude.contains(&device.ip))
+        .collect())
 }
 
 pub fn select_interface() -> String {
@@ -125,6 +180,22 @@ mod imp {
             .unwrap_or("unknown")
             .to_string()
     }
+
+    /// Link speed in Mbit/s, straight from sysfs. Wi-Fi drivers routinely
+    /// report `-1` (or the sentinel `65535`) because the rate varies per
+    /// packet, so `None` is a normal answer here, not an error — see
+    /// `parse_link_speed` for the decoding.
+    pub fn link_speed_mbit(iface: &str) -> Option<u32> {
+        let raw = std::fs::read_to_string(format!("/sys/class/net/{iface}/speed")).ok()?;
+        super::parse_link_speed(&raw)
+    }
+
+    /// This interface's own hardware address. Read straight from sysfs, so it
+    /// is available without a lookup and can't be confused with a neighbour.
+    pub fn own_mac(iface: &str) -> Option<String> {
+        let raw = std::fs::read_to_string(format!("/sys/class/net/{iface}/address")).ok()?;
+        super::parse_sysfs_mac(&raw)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -221,6 +292,34 @@ mod imp {
             .filter(|m| *m != "(incomplete)")
             .unwrap_or("unknown")
             .to_string()
+    }
+
+    /// Best-effort link speed from the `media:` line of `ifconfig`, e.g.
+    /// "media: autoselect (1000baseT <full-duplex>)" -> 1000. Wi-Fi reports a
+    /// bare "autoselect" with no rate, so this returns `None` on a wireless
+    /// interface — which is why callers must have their own fallback.
+    pub fn link_speed_mbit(iface: &str) -> Option<u32> {
+        let out = run("ifconfig", &[iface]);
+        let media = out.lines().find(|l| l.contains("media:"))?;
+        let base = media.find("base")?;
+        let digits: String = media[..base]
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        digits.chars().rev().collect::<String>().parse().ok()
+    }
+
+    /// This interface's own hardware address, from `ifconfig`'s `ether` line.
+    pub fn own_mac(iface: &str) -> Option<String> {
+        let out = run("ifconfig", &[iface]);
+        for line in out.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("ether ") {
+                return crate::oui::normalize_mac(rest.split_whitespace().next()?);
+            }
+        }
+        None
     }
 }
 
@@ -321,6 +420,198 @@ mod imp {
         }
         "unknown".to_string()
     }
+
+    /// Best-effort: the currently negotiated Wi-Fi receive rate. This is a
+    /// per-packet PHY rate that moves around, not the link's capacity, so it
+    /// is only ever used as an upper-bound hint.
+    pub fn link_speed_mbit(_iface: &str) -> Option<u32> {
+        let out = run("netsh", &["wlan", "show", "interfaces"]);
+        for line in out.lines() {
+            let line = line.trim();
+            if line.starts_with("Receive rate") {
+                return line.split(':').nth(1).and_then(|v| v.trim().parse().ok());
+            }
+        }
+        None
+    }
+
+    /// This adapter's own hardware address, from `getmac`'s CSV output.
+    ///
+    /// Unverified on real hardware, like the rest of this backend. `getmac`
+    /// prints every adapter, so the row whose name mentions `iface` is
+    /// preferred, falling back to the first hardware address found.
+    pub fn own_mac(iface: &str) -> Option<String> {
+        let out = run("getmac", &["/v", "/fo", "csv", "/nh"]);
+        let wanted = iface.to_lowercase();
+        let mut fallback = None;
+        for line in out.lines() {
+            let fields: Vec<String> = line
+                .split(',')
+                .map(|f| f.trim().trim_matches('"').to_string())
+                .collect();
+            // Columns are: Connection Name, Network Adapter, Physical Address, ...
+            let Some(address) = fields.get(2) else { continue };
+            let Some(mac) = crate::oui::normalize_mac(address) else {
+                continue;
+            };
+            if fields
+                .first()
+                .is_some_and(|name| name.to_lowercase().contains(&wanted))
+            {
+                return Some(mac);
+            }
+            fallback.get_or_insert(mac);
+        }
+        fallback
+    }
 }
 
-pub use imp::{get_gateway, get_own_ip, get_subnet, list_wifi_interfaces, lookup_mac};
+/// Decodes the text of Linux's `/sys/class/net/<iface>/speed`. Split out from
+/// the imp module so the sentinel handling is testable without a network
+/// interface: the kernel uses `-1` (and historically `65535`) to mean
+/// "unknown", which is what most Wi-Fi drivers report.
+pub fn parse_link_speed(raw: &str) -> Option<u32> {
+    let speed: i64 = raw.trim().parse().ok()?;
+    if speed <= 0 || speed == 65535 {
+        return None;
+    }
+    u32::try_from(speed).ok()
+}
+
+/// Decodes the text of Linux's `/sys/class/net/<iface>/address`.
+///
+/// Returns `None` for the all-zero address, which is what an interface that
+/// hasn't come up yet reports — treating that as a real address would make
+/// the ARP watcher ignore everything.
+pub fn parse_sysfs_mac(raw: &str) -> Option<String> {
+    let mac = crate::oui::normalize_mac(raw.trim())?;
+    let all_zero = mac.split(':').all(|octet| octet == "00");
+    (!all_zero).then_some(mac)
+}
+
+pub use imp::{
+    get_gateway, get_own_ip, get_subnet, link_speed_mbit, list_wifi_interfaces, lookup_mac, own_mac,
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_known_speeds() {
+        assert_eq!(parse_link_speed("1000\n"), Some(1000));
+        assert_eq!(parse_link_speed("100"), Some(100));
+        assert_eq!(parse_link_speed(" 2500 "), Some(2500));
+    }
+
+    #[test]
+    fn treats_unknown_sentinels_as_absent() {
+        // What Wi-Fi drivers actually report.
+        assert_eq!(parse_link_speed("-1"), None);
+        assert_eq!(parse_link_speed("65535"), None);
+        assert_eq!(parse_link_speed("0"), None);
+        assert_eq!(parse_link_speed(""), None);
+        assert_eq!(parse_link_speed("unknown"), None);
+    }
+
+    #[test]
+    fn reads_an_interface_hardware_address() {
+        assert_eq!(
+            parse_sysfs_mac("aa:bb:cc:dd:ee:ff\n"),
+            Some("aa:bb:cc:dd:ee:ff".to_string())
+        );
+        assert_eq!(
+            parse_sysfs_mac("AA:BB:CC:DD:EE:FF"),
+            Some("aa:bb:cc:dd:ee:ff".to_string()),
+            "normalised"
+        );
+    }
+
+    #[test]
+    fn an_interface_that_is_not_up_has_no_address() {
+        // A down interface reports all zeroes; treating that as real would
+        // make the ARP watcher match every packet against it.
+        assert_eq!(parse_sysfs_mac("00:00:00:00:00:00"), None);
+        assert_eq!(parse_sysfs_mac(""), None);
+        assert_eq!(parse_sysfs_mac("not-a-mac"), None);
+    }
+
+    const SCAN: &str = "\
+Starting Nmap 7.94 ( https://nmap.org ) at 2026-09-16 19:04 UTC
+Nmap scan report for kids-ipad (192.168.1.27)
+Host is up (0.012s latency).
+MAC Address: 00:14:51:11:22:33 (Apple)
+Nmap scan report for 192.168.1.1
+Host is up (0.0031s latency).
+MAC Address: 3C:22:FB:AA:BB:CC (Apple)
+Nmap scan report for unknown-device.local (192.168.1.144)
+Host is up (0.020s latency).
+Nmap scan report for 192.168.1.200
+Host is up (0.050s latency).
+Nmap done: 256 IP addresses (4 hosts up) scanned in 6.21 seconds
+";
+
+    #[test]
+    fn extracts_ip_hostname_and_mac() {
+        let devices = parse_nmap_output(SCAN);
+        assert_eq!(devices.len(), 4);
+
+        assert_eq!(devices[0].ip, "192.168.1.27");
+        assert_eq!(devices[0].hostname.as_deref(), Some("kids-ipad"));
+        assert_eq!(devices[0].mac.as_deref(), Some("00:14:51:11:22:33"));
+
+        assert_eq!(devices[1].ip, "192.168.1.1");
+        assert_eq!(devices[1].hostname, None, "a bare IP has no hostname");
+        assert_eq!(devices[1].mac.as_deref(), Some("3c:22:fb:aa:bb:cc"), "lowercased");
+    }
+
+    #[test]
+    fn handles_a_hostname_that_has_no_mac_line() {
+        let devices = parse_nmap_output(SCAN);
+        let device = devices.iter().find(|d| d.ip == "192.168.1.144").unwrap();
+        assert_eq!(device.hostname.as_deref(), Some("unknown-device.local"));
+        assert_eq!(device.mac, None, "nmap didn't report one");
+    }
+
+    #[test]
+    fn does_not_attach_a_mac_to_the_wrong_device() {
+        // 192.168.1.200 follows a device that *does* have a MAC; the parser
+        // must not carry it over.
+        let devices = parse_nmap_output(SCAN);
+        let last = devices.iter().find(|d| d.ip == "192.168.1.200").unwrap();
+        assert_eq!(last.mac, None);
+    }
+
+    #[test]
+    fn ignores_the_header_and_footer() {
+        let devices = parse_nmap_output(SCAN);
+        assert!(devices.iter().all(|d| !d.ip.contains("Nmap")));
+    }
+
+    #[test]
+    fn handles_empty_and_malformed_output() {
+        assert!(parse_nmap_output("").is_empty());
+        assert!(parse_nmap_output("Nmap done: 256 IP addresses\n").is_empty());
+        // A MAC line with no preceding report must not panic.
+        assert!(parse_nmap_output("MAC Address: 00:14:51:11:22:33 (Apple)\n").is_empty());
+        // A MAC line that nmap printed as unknown.
+        let devices = parse_nmap_output(
+            "Nmap scan report for 192.168.1.5\nMAC Address: 00:00:00:00:00:00 (Unknown)\n",
+        );
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].mac.as_deref(), Some("00:00:00:00:00:00"));
+    }
+
+    #[test]
+    fn a_skipped_mac_line_does_not_break_the_next_device() {
+        let devices = parse_nmap_output(
+            "Nmap scan report for 192.168.1.5\n\
+             MAC Address: not-a-mac\n\
+             Nmap scan report for 192.168.1.6\n\
+             MAC Address: 00:14:51:11:22:33 (Apple)\n",
+        );
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].mac, None, "unparseable MAC left empty");
+        assert_eq!(devices[1].mac.as_deref(), Some("00:14:51:11:22:33"));
+    }
+}

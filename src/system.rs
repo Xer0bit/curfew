@@ -4,6 +4,8 @@ use crate::colors::{CYAN, RED, RESET};
 use std::io::{self, Write};
 use std::process::Command;
 use std::sync::mpsc;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
@@ -23,6 +25,18 @@ pub fn run_status(cmd: &str, args: &[&str]) {
     let _ = Command::new(cmd).args(args).status();
 }
 
+/// Like [`run_status`], but reports whether the command actually succeeded.
+/// Used where a failure has to change what we do next — e.g. don't point a
+/// `tc` filter at a class whose creation just failed, because traffic
+/// matching a filter with a nonexistent target can be dropped outright.
+pub fn run_ok(cmd: &str, args: &[&str]) -> bool {
+    Command::new(cmd)
+        .args(args)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// Like [`run`], but returns `Err` instead of panicking if the command can't
 /// be spawned. Used inside the long-running monitor loop, where a transient
 /// or missing-tool failure should be reported once and retried, not silently
@@ -35,7 +49,9 @@ pub fn try_run(cmd: &str, args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("failed to run {cmd}: {e}"))
 }
 
-fn tool_exists(cmd: &str) -> bool {
+/// True if `cmd` is on `PATH`. Used both for the required-tools check and for
+/// optional tools whose absence only disables a feature.
+pub fn tool_exists(cmd: &str) -> bool {
     #[cfg(unix)]
     {
         Command::new("sh")
@@ -163,27 +179,66 @@ pub fn require_root() {
     }
 }
 
-/// Turns Linux/macOS kernel IP forwarding on or off, needed while ARP
-/// spoofing so this machine actually relays the traffic it's intercepting
-/// instead of black-holing it. On Windows this is a no-op: WinDivert
-/// re-injects packets itself at the network-forward layer, it doesn't rely
-/// on `netsh interface ipv4 set global forwarding`.
+/// The value of the IP-forwarding sysctl before Curfew changed it, so
+/// [`disable_ip_forward`] can put it back exactly as it was. `None` means
+/// Curfew never turned forwarding on (so it must not turn it off).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+static PRIOR_IP_FORWARD: OnceLock<Option<String>> = OnceLock::new();
+
+/// Records the current forwarding value and forces it on. Idempotent: only
+/// the first call captures the original value, so a second call can't record
+/// our own "1" as if it were the user's setting.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn capture_and_enable(prior: String) {
+    PRIOR_IP_FORWARD.get_or_init(|| Some(prior));
+}
+
+/// Turns Linux/macOS kernel IP forwarding on, needed while ARP spoofing so
+/// this machine actually relays the traffic it's intercepting instead of
+/// black-holing it. On Windows this is a no-op: WinDivert re-injects packets
+/// itself at the network-forward layer, it doesn't rely on
+/// `netsh interface ipv4 set global forwarding`.
 #[cfg(target_os = "linux")]
 pub fn enable_ip_forward() {
+    let prior = std::fs::read_to_string("/proc/sys/net/ipv4/ip_forward")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "0".to_string());
+    capture_and_enable(prior);
     let _ = std::fs::write("/proc/sys/net/ipv4/ip_forward", "1");
 }
+
+/// Restores forwarding to whatever it was before [`enable_ip_forward`] ran.
+/// If Curfew never enabled it (or the user already had it on), this is a
+/// no-op — so we never silently disable forwarding that something else on
+/// the machine (Docker, a software router, a prior `sysctl`) depends on.
 #[cfg(target_os = "linux")]
 pub fn disable_ip_forward() {
-    let _ = std::fs::write("/proc/sys/net/ipv4/ip_forward", "0");
+    match PRIOR_IP_FORWARD.get() {
+        Some(Some(prior)) if prior != "1" => {
+            let _ = std::fs::write("/proc/sys/net/ipv4/ip_forward", prior.as_str());
+        }
+        _ => {}
+    }
 }
 
 #[cfg(target_os = "macos")]
 pub fn enable_ip_forward() {
+    let prior = run("sysctl", &["-n", "net.inet.ip.forwarding"]);
+    capture_and_enable(prior);
     run_status("sysctl", &["-w", "net.inet.ip.forwarding=1"]);
 }
+
 #[cfg(target_os = "macos")]
 pub fn disable_ip_forward() {
-    run_status("sysctl", &["-w", "net.inet.ip.forwarding=0"]);
+    match PRIOR_IP_FORWARD.get() {
+        Some(Some(prior)) if prior.trim() != "1" && !prior.trim().is_empty() => {
+            run_status(
+                "sysctl",
+                &["-w", &format!("net.inet.ip.forwarding={}", prior.trim())],
+            );
+        }
+        _ => {}
+    }
 }
 
 #[cfg(target_os = "windows")]
